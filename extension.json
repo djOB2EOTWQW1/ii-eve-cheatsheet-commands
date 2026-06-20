@@ -1,0 +1,8 @@
+{
+  "name": "Cheatsheet Commands",
+  "description": "Commands page for the ii-eve cheatsheet.",
+  "version": "1.0.0", "author": "djOB2EOTWQW1", "icon": "terminal",
+  "contributes": { "cheatsheetPages": [
+    { "identifier": "commands", "title": "Commands", "icon": "terminal", "component": "src/CheatsheetCommands.qml" }
+  ] }
+}

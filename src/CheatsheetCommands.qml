@@ -1,0 +1,943 @@
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Controls
+import qs.modules.common
+import qs.modules.common.widgets
+import qs.modules.common.functions
+import qs.modules.common.models
+import qs.services
+import Quickshell
+import Quickshell.Io
+import Qt.labs.folderlistmodel
+
+Item {
+    id: root
+
+    readonly property color colBg: Config.options.appearance.transparency.enable ? Appearance.colors.colLayer0 : Appearance.m3colors.m3surfaceContainerLow
+    readonly property color colTitle: Appearance.colors.colOnSurface
+    readonly property color colSubtitle: Appearance.colors.colOnSurfaceVariant
+    readonly property color colAccent: Appearance.colors.colPrimary
+    readonly property color colAccentHover: Appearance.colors.colPrimaryHover
+    readonly property color colOnAccent: Appearance.colors.colOnPrimary
+
+    property string activeTag: ""
+    property string searchText: ""
+    property var allTags: []
+
+    property bool importSuccess: false
+    property bool importError: false
+    property string lastImportError: ""
+    property var filteredIndices: {
+        const model = CommandsService.commandsModel;
+        if (!model || model.count === undefined)
+            return [];
+        
+        // Force re-evaluation when model changes
+        const _count = model.count;
+        const _tags = CommandsService.tagCounts;
+        const _version = CommandsService.modelVersion;
+        
+        const q = (root.searchText || "").toLowerCase();
+        const tag = root.activeTag;
+        const result = [];
+        for (let i = 0; i < model.count; i++) {
+            const item = model.get(i);
+            if (!item || item.command === undefined)
+                continue;
+            
+            let tagMatch = tag === "";
+            if (!tagMatch && item.tags && item.tags.count !== undefined) {
+                for (let t = 0; t < item.tags.count; t++) {
+                    const tagObj = item.tags.get(t);
+                    if (tagObj && tagObj.modelData === tag) {
+                        tagMatch = true;
+                        break;
+                    }
+                }
+            }
+            const textMatch = q === "" || (item.command && item.command.toLowerCase().includes(q)) || (item.description && item.description.toLowerCase().includes(q));
+            if (tagMatch && textMatch)
+                result.push(i);
+        }
+        return result;
+    }
+
+    focus: true
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_Escape) {
+            if (root.searchText.length > 0 || filterField.text.length > 0) {
+                root.searchText = "";
+                filterField.text = "";
+                event.accepted = true;
+            }
+            return;
+        }
+        if (event.key === Qt.Key_Slash) {
+            filterField.forceActiveFocus();
+            event.accepted = true;
+            return;
+        }
+        const t = event.text;
+        const blocked = event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier);
+        if (t.length === 1 && t.charCodeAt(0) >= 0x20 && !blocked) {
+            filterField.forceActiveFocus();
+            filterField.text += t;
+            event.accepted = true;
+        }
+    }
+
+    function refreshTags() {
+        if (CommandsService)
+            allTags = CommandsService.allTags();
+    }
+
+    Connections {
+        target: CommandsService.commandsModel
+        function onCountChanged() {
+            if (!CommandsService.importing)
+                root.refreshTags();
+        }
+    }
+
+    Connections {
+        target: CommandsService
+        function onImportFinished(success, errorMsg) {
+            root.refreshTags();
+            if (success) {
+                root.importSuccess = true;
+                root.importError = false;
+                successTimer.restart();
+            } else {
+                root.importSuccess = false;
+                root.importError = true;
+                root.lastImportError = errorMsg;
+                errorTimer.restart();
+            }
+        }
+    }
+
+    Timer {
+        id: successTimer
+        interval: 2000
+        onTriggered: root.importSuccess = false
+    }
+
+    Timer {
+        id: errorTimer
+        interval: 4000
+        onTriggered: root.importError = false
+    }
+
+    Timer {
+        id: searchDebounceTimer
+        interval: 150
+        onTriggered: root.searchText = filterField.text
+    }
+
+    // Diff-syncs the visible ListModel against filteredIndices so GridView
+    // fires add/remove/displaced transitions for incremental filter changes.
+    ListModel { id: visibleCommands }
+    function _syncVisibleCommands() {
+        const want = root.filteredIndices;
+        const wantSet = {};
+        for (let i = 0; i < want.length; i++) wantSet[want[i]] = true;
+        for (let i = visibleCommands.count - 1; i >= 0; i--) {
+            if (!wantSet[visibleCommands.get(i).idx]) visibleCommands.remove(i, 1);
+        }
+        for (let i = 0; i < want.length; i++) {
+            const w = want[i];
+            if (i >= visibleCommands.count) {
+                visibleCommands.append({ idx: w });
+                continue;
+            }
+            if (visibleCommands.get(i).idx === w) continue;
+            let foundAt = -1;
+            for (let j = i + 1; j < visibleCommands.count; j++) {
+                if (visibleCommands.get(j).idx === w) { foundAt = j; break; }
+            }
+            if (foundAt >= 0) visibleCommands.move(foundAt, i, 1);
+            else visibleCommands.insert(i, { idx: w });
+        }
+    }
+    onFilteredIndicesChanged: Qt.callLater(_syncVisibleCommands)
+
+    Component.onCompleted: {
+        root.refreshTags();
+        root._syncVisibleCommands();
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        color: root.colBg
+        radius: Appearance.rounding.windowRounding
+        antialiasing: true
+    }
+
+    Item {
+        id: inboxContent
+        anchors.fill: parent
+
+        opacity: (commandForm.isOpen || commandForm.isAnimating || qmlFilePicker.visible) ? 0.0 : 1.0
+        enabled: !commandForm.isOpen && !commandForm.isAnimating && !qmlFilePicker.visible
+
+        Behavior on opacity {
+            NumberAnimation {
+                duration: 350
+                easing.type: Easing.OutCubic
+            }
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: 14
+                Layout.leftMargin: 20
+                Layout.rightMargin: 16
+                Layout.bottomMargin: 4
+                spacing: 12
+
+                ColumnLayout {
+                    spacing: 1
+                    StyledText {
+                        text: "CHEATSHEET"
+                        font.pixelSize: Appearance.font.pixelSize.smaller
+                        color: root.colSubtitle
+                        font.family: Appearance.font.family.main
+                    }
+                    StyledText {
+                        text: qsTr("Commands")
+                        font.pixelSize: Appearance.font.pixelSize.huge
+                        font.weight: Font.Bold
+                        color: root.colTitle
+                    }
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                }
+
+                RippleButton {
+                    implicitHeight: 44
+                    implicitWidth: 44
+                    buttonRadius: Appearance.rounding.full
+                    enabled: CommandsService.commandsModel.count > 0
+                    opacity: enabled ? 1.0 : 0.4
+                    colBackground: Appearance.colors.colErrorContainer
+                    colBackgroundHover: Appearance.colors.colErrorContainerHover
+                    onClicked: deleteAllDialog.show = true
+
+                    Behavior on opacity {
+                        NumberAnimation {
+                            duration: 150
+                            easing.type: Easing.OutCubic
+                        }
+                    }
+
+                    MaterialSymbol {
+                        anchors.centerIn: parent
+                        text: "delete_sweep"
+                        iconSize: Appearance.font.pixelSize.large
+                        color: Appearance.colors.colOnErrorContainer
+                    }
+
+                    StyledToolTip {
+                        text: qsTr("Delete all commands")
+                    }
+                }
+
+                RippleButton {
+                    implicitHeight: 44
+                    implicitWidth: 44
+                    buttonRadius: Appearance.rounding.full
+                    colBackground: root.importError ? Appearance.colors.colError : (root.importSuccess ? Appearance.colors.colTertiary : Appearance.colors.colSecondaryContainer)
+                    colBackgroundHover: root.importError ? Appearance.colors.colErrorHover : (root.importSuccess ? Appearance.colors.colTertiaryHover : Appearance.colors.colSecondaryContainerHover)
+                    onClicked: qmlFilePicker.visible = true
+
+                    MaterialSymbol {
+                        id: importIcon
+                        anchors.centerIn: parent
+                        text: root.importError ? "close" : (root.importSuccess ? "done" : "folder_open")
+                        iconSize: Appearance.font.pixelSize.large
+                        color: root.importError ? Appearance.colors.colOnError : (root.importSuccess ? Appearance.colors.colOnTertiary : Appearance.colors.colOnSecondaryContainer)
+
+                        Behavior on text {
+                            SequentialAnimation {
+                                NumberAnimation {
+                                    target: importIcon
+                                    property: "scale"
+                                    to: 0
+                                    duration: 100
+                                }
+                                PropertyAction {}
+                                NumberAnimation {
+                                    target: importIcon
+                                    property: "scale"
+                                    to: 1
+                                    duration: 100
+                                }
+                            }
+                        }
+                    }
+
+                    StyledToolTip {
+                        text: qsTr("Import commands")
+                    }
+                }
+
+                RippleButton {
+                    implicitHeight: 44
+                    implicitWidth: addRow.implicitWidth + 24
+                    buttonRadius: Appearance.rounding.full
+                    colBackground: root.colAccent
+                    colBackgroundHover: root.colAccentHover
+                    onClicked: {
+                        commandForm.mode = "add";
+                        commandForm.editId = "";
+                        commandForm.editCommand = "";
+                        commandForm.editDescription = "";
+                        commandForm.editTags = "";
+                        commandForm.isOpen = true;
+                    }
+
+                    RowLayout {
+                        id: addRow
+                        anchors.centerIn: parent
+                        spacing: 6
+                        MaterialSymbol {
+                            text: "add"
+                            horizontalAlignment: Text.AlignHCenter
+                            iconSize: Appearance.font.pixelSize.large
+                            color: root.colOnAccent
+                        }
+                        StyledText {
+                            text: qsTr("Add command")
+                            font.weight: Font.Bold
+                            color: root.colOnAccent
+                        }
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                spacing: 0
+
+                Rectangle {
+                    id: tagSidebar
+                    Layout.fillHeight: true
+                    width: Config.options.cheatsheet.commandsTagsSidebar ? 260 : 0
+                    visible: Config.options.cheatsheet.commandsTagsSidebar
+                    color: "transparent"
+                    clip: true
+
+                    Behavior on width {
+                        NumberAnimation {
+                            duration: 250
+                            easing.type: Easing.OutCubic
+                        }
+                    }
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.topMargin: 20
+                        anchors.bottomMargin: 20
+                        spacing: 4
+
+                        StyledFlickable {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            contentHeight: sidebarTagsColumn.implicitHeight
+                            clip: true
+
+                            ColumnLayout {
+                                id: sidebarTagsColumn
+                                width: parent.width
+                                spacing: 2
+
+                                Repeater {
+                                    model: [""].concat(root.allTags)
+                                    delegate: MouseArea {
+                                        id: tagMa
+                                        property string tagValue: modelData
+                                        Layout.fillWidth: true
+                                        implicitHeight: 40
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.activeTag = tagValue
+
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.leftMargin: 12
+                                            anchors.rightMargin: 12
+                                            radius: Appearance.rounding.large
+                                            color: root.activeTag === tagMa.tagValue ? Qt.alpha(root.colAccent, 0.15) : tagMa.containsMouse ? Appearance.colors.colLayer2Hover : "transparent"
+
+                                            Behavior on color {
+                                                ColorAnimation {
+                                                    duration: 150
+                                                }
+                                            }
+
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 16
+                                                anchors.rightMargin: 12
+                                                spacing: 8
+
+                                                StyledText {
+                                                    text: tagMa.tagValue === "" ? qsTr("All") : tagMa.tagValue
+                                                    font.pixelSize: Appearance.font.pixelSize.default
+                                                    font.weight: root.activeTag === tagMa.tagValue ? Font.Medium : Font.Normal
+                                                    color: root.activeTag === tagMa.tagValue ? root.colTitle : root.colSubtitle
+                                                    Layout.fillWidth: true
+                                                    elide: Text.ElideRight
+                                                }
+
+                                                Rectangle {
+                                                    implicitWidth: countText.implicitWidth + 14
+                                                    implicitHeight: 22
+                                                    radius: 11
+                                                    color: root.activeTag === tagMa.tagValue ? root.colAccent : Appearance.colors.colSecondaryContainer
+
+                                                    StyledText {
+                                                        id: countText
+                                                        anchors.centerIn: parent
+                                                        text: CommandsService.tagCounts[tagMa.tagValue] || 0
+                                                        font.pixelSize: Appearance.font.pixelSize.smaller
+                                                        font.weight: Font.Bold
+                                                        color: root.activeTag === tagMa.tagValue ? Appearance.colors.colOnPrimary : Appearance.colors.colOnSecondaryContainer
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        width: 1
+                        color: Appearance.colors.colLayer3Base
+                        opacity: 0.3
+                    }
+                }
+
+                ColumnLayout {
+                    id: mainContentArea
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    spacing: 4
+
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 16
+                        Layout.rightMargin: 16
+                        Layout.bottomMargin: 4
+                        implicitHeight: Config.options.cheatsheet.commandsTagsSidebar ? 0 : tagFlickable.height
+                        visible: !Config.options.cheatsheet.commandsTagsSidebar
+                        clip: true
+
+                        Flickable {
+                            id: tagFlickable
+                            width: parent.width
+                            height: tagButtonGroup.implicitHeight
+                            contentWidth: tagButtonGroup.implicitWidth
+                            contentHeight: height
+                            flickableDirection: Flickable.HorizontalFlick
+                            clip: true
+
+                            ButtonGroup {
+                                id: tagButtonGroup
+                                spacing: 4
+                                padding: 0
+
+                                SelectionGroupButton {
+                                    buttonText: qsTr("All")
+                                    toggled: root.activeTag === ""
+                                    onClicked: root.activeTag = ""
+                                    leftmost: true
+                                    rightmost: root.allTags.length === 0
+                                }
+
+                                Repeater {
+                                    model: root.allTags
+                                    delegate: SelectionGroupButton {
+                                        required property string modelData
+                                        required property int index
+                                        buttonText: modelData
+                                        toggled: root.activeTag === modelData
+                                        onClicked: root.activeTag = (root.activeTag === modelData ? "" : modelData)
+                                        leftmost: false
+                                        rightmost: index === root.allTags.length - 1
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    StyledText {
+                        Layout.leftMargin: 20
+                        Layout.bottomMargin: 4
+                        text: root.filteredIndices.length + " " + qsTr("commands")
+                        font.pixelSize: Appearance.font.pixelSize.smaller
+                        color: root.colSubtitle
+                    }
+
+                    GridView {
+                        id: cardGrid
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.leftMargin: 16
+                        Layout.rightMargin: 16
+                        cellWidth: Math.max(100, width / 2)
+                        cellHeight: 180
+                        model: visibleCommands
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        displaced: Transition {
+                            NumberAnimation { properties: "x,y"; duration: 220; easing.type: Easing.OutCubic }
+                        }
+                        move: Transition {
+                            NumberAnimation { properties: "x,y"; duration: 220; easing.type: Easing.OutCubic }
+                        }
+                        moveDisplaced: Transition {
+                            NumberAnimation { properties: "x,y"; duration: 220; easing.type: Easing.OutCubic }
+                        }
+
+                        delegate: Item {
+                            id: cardDelegate
+                            required property int idx
+                            width: cardGrid.cellWidth
+                            height: cardGrid.cellHeight
+                            property bool _appeared: false
+                            opacity: cardDelegate._appeared ? 1 : 0
+                            scale: cardDelegate._appeared ? 1 : 0.85
+                            Behavior on opacity {
+                                NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+                            }
+                            Behavior on scale {
+                                NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+                            }
+                            Component.onCompleted: cardDelegate._appeared = true
+
+                            // Depend on modelVersion so this re-evaluates after
+                            // remove/insert/set — otherwise the get() result is
+                            // a stale snapshot (empty card) when rows shift.
+                            readonly property var _item: {
+                                CommandsService.modelVersion;
+                                const m = CommandsService.commandsModel;
+                                if (cardDelegate.idx < 0 || cardDelegate.idx >= m.count) return null;
+                                return m.get(cardDelegate.idx);
+                            }
+
+                            CommandCard {
+                                id: commandCard
+                                anchors.fill: parent
+                                anchors.margins: 5
+                                visible: cardDelegate._item !== null
+
+                                commandId: cardDelegate._item ? cardDelegate._item.id : ""
+                                command: cardDelegate._item ? cardDelegate._item.command : ""
+                                description: cardDelegate._item ? cardDelegate._item.description : ""
+                                tags: {
+                                    if (!cardDelegate._item || !cardDelegate._item.tags) return [];
+                                    const t = [];
+                                    for (let i = 0; i < cardDelegate._item.tags.count; i++)
+                                        t.push(cardDelegate._item.tags.get(i).modelData);
+                                    return t;
+                                }
+
+                                onEditClicked: {
+                                    const item = cardDelegate._item;
+                                    if (!item) return;
+                                    const tagArr = [];
+                                    for (let i = 0; i < item.tags.count; i++)
+                                        tagArr.push(item.tags.get(i).modelData);
+
+                                    commandForm.mode = "edit";
+                                    commandForm.editId = item.id;
+                                    commandForm.editCommand = item.command;
+                                    commandForm.editDescription = item.description;
+                                    commandForm.editTags = tagArr.join(", ");
+                                    commandForm.isOpen = true;
+                                }
+
+                                onDeleteClicked: CommandsService.deleteCommand(commandId)
+                            }
+                        }
+
+                        footer: Item {
+                            width: cardGrid.width
+                            height: 100
+                        }
+
+                        ScrollBar.vertical: StyledScrollBar {}
+                    }
+                }
+            }
+        }
+
+        PagePlaceholder {
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.horizontalCenterOffset: Config.options.cheatsheet.commandsTagsSidebar ? (tagSidebar.width / 2) : 0
+            anchors.verticalCenter: parent.verticalCenter
+
+            Behavior on anchors.horizontalCenterOffset {
+                NumberAnimation {
+                    duration: 250
+                    easing.type: Easing.OutCubic
+                }
+            }
+            shown: root.filteredIndices.length === 0
+            icon: (root.searchText !== "" || root.activeTag !== "") ? "search_off" : "terminal"
+            description: (root.searchText !== "" || root.activeTag !== "") ? qsTr("No results") : qsTr("No commands yet.\nClick \"Add command\" to get started.")
+            shape: MaterialShape.Shape.Ghostish
+            descriptionHorizontalAlignment: Text.AlignHCenter
+        }
+
+        Toolbar {
+            id: extraOptions
+            z: 5
+            colBackground: Appearance.colors.colSecondaryContainer
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.horizontalCenterOffset: Config.options.cheatsheet.commandsTagsSidebar ? (tagSidebar.width / 2) : 0
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 20
+
+            Behavior on anchors.horizontalCenterOffset {
+                NumberAnimation {
+                    duration: 250
+                    easing.type: Easing.OutCubic
+                }
+            }
+
+            ToolbarTextField {
+                id: filterField
+                placeholderText: focus ? qsTr("Filter commands") : qsTr("Hit \"/\" to filter")
+                clip: true
+                font.pixelSize: Appearance.font.pixelSize.small
+                onTextChanged: searchDebounceTimer.restart()
+                colBackground: Qt.alpha(Appearance.colors.colOnSecondaryContainer, 0.05)
+                color: Appearance.colors.colOnSecondaryContainer
+                placeholderTextColor: Qt.alpha(Appearance.colors.colOnSecondaryContainer, 0.6)
+                Keys.onPressed: event => {
+                    if (event.key === Qt.Key_Escape) {
+                        if (text.length > 0 || root.searchText.length > 0) {
+                            text = "";
+                            root.searchText = "";
+                            event.accepted = true;
+                        }
+                        // else: let the event bubble up so cheatsheet can close.
+                    }
+                }
+            }
+
+            IconToolbarButton {
+                implicitWidth: height
+                onClicked: root.searchText = filterField.text = ''
+                text: "close"
+                colText: Appearance.colors.colOnSecondaryContainer
+                StyledToolTip {
+                    text: qsTr("Clear filter")
+                }
+            }
+        }
+    }
+
+    CommandForm {
+        id: commandForm
+        anchors.fill: parent
+        z: 10
+        visible: isOpen || isAnimating
+        onCloseRequested: refreshTags()
+    }
+
+    Rectangle {
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 80
+        z: 150
+        radius: Appearance.rounding.normal
+        color: Appearance.colors.colErrorContainer
+        border.color: Appearance.colors.colError
+        border.width: 1
+        width: errorLabel.implicitWidth + 32
+        height: errorLabel.implicitHeight + 16
+        opacity: root.importError ? 1.0 : 0.0
+        visible: opacity > 0
+        Behavior on opacity {
+            NumberAnimation {
+                duration: 200
+                easing.type: Easing.OutCubic
+            }
+        }
+
+        StyledText {
+            id: errorLabel
+            anchors.centerIn: parent
+            text: root.lastImportError
+            color: Appearance.colors.colOnErrorContainer
+            font.pixelSize: Appearance.font.pixelSize.small
+        }
+    }
+
+    // ── Internal File Picker Overlay ──────────────────────────────────────────
+    Rectangle {
+        id: qmlFilePicker
+        anchors.fill: parent
+        color: Config.options.appearance.transparency.enable ? Appearance.colors.colLayer1Base : Appearance.m3colors.m3surfaceContainerLow
+        visible: false
+        z: 100
+        radius: Appearance.rounding.windowRounding
+        antialiasing: true
+        clip: true
+
+        FolderListModelWithHistory {
+            id: localFolderModel
+            folder: "file://" + (Directories.home ? FileUtils.trimFileProtocol(Directories.home) : "")
+            showDirs: true
+            showDotAndDotDot: false
+            sortField: FolderListModel.Name
+            nameFilters: ["*.json"]
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 16
+            spacing: 12
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 12
+
+                MaterialSymbol {
+                    text: "attach_file"
+                    iconSize: 20
+                    color: Appearance.colors.colPrimary
+                }
+
+                StyledText {
+                    text: qsTr("Select JSON to Import")
+                    font.pixelSize: Appearance.font.pixelSize.large
+                    font.weight: Font.Bold
+                    color: Appearance.colors.colOnSurface
+                    Layout.fillWidth: true
+                }
+
+                RippleButton {
+                    implicitWidth: 36
+                    implicitHeight: 36
+                    buttonRadius: Appearance.rounding.full
+                    colBackground: Appearance.colors.colLayer2Base
+                    colBackgroundHover: Appearance.colors.colLayer2Hover
+                    onClicked: qmlFilePicker.visible = false
+
+                    MaterialSymbol {
+                        anchors.centerIn: parent
+                        text: "close"
+                        iconSize: 18
+                        color: Appearance.colors.colOnSurface
+                    }
+                }
+            }
+
+            AddressBar {
+                id: pickerAddressBar
+                Layout.fillWidth: true
+                directory: localFolderModel.folder ? FileUtils.trimFileProtocol(localFolderModel.folder) : ""
+                onNavigateToDirectory: path => {
+                    if (!path)
+                        return;
+                    localFolderModel.folder = Qt.resolvedUrl(path.startsWith("/") ? "file://" + path : path);
+                }
+                radius: Appearance.rounding.normal
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                radius: Appearance.rounding.large
+                color: Appearance.colors.colLayer2Base
+                clip: true
+
+                ListView {
+                    id: localFileView
+                    anchors.fill: parent
+                    anchors.margins: 6
+                    clip: true
+                    spacing: 2
+                    model: localFolderModel
+
+                    delegate: MouseArea {
+                        id: fileDelegate
+                        width: localFileView.width
+                        height: 48
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+
+                        property bool capturedIsDir: fileIsDir
+                        property string capturedPath: filePath
+                        property string capturedName: fileName
+
+                        onClicked: {
+                            if (fileDelegate.capturedIsDir) {
+                                localFolderModel.folder = "file://" + fileDelegate.capturedPath;
+                            } else {
+                                qmlFilePicker.visible = false;
+                                CommandsService.importCommands(fileDelegate.capturedPath);
+                            }
+                        }
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: Appearance.rounding.small
+                            color: fileDelegate.pressed ? Appearance.colors.colLayer3Active : fileDelegate.containsMouse ? Appearance.colors.colLayer3Hover : "transparent"
+                        }
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            spacing: 12
+
+                            MaterialSymbol {
+                                text: fileDelegate.capturedIsDir ? "folder" : "code"
+                                iconSize: 18
+                                color: fileDelegate.capturedIsDir ? Appearance.colors.colSecondary : Appearance.colors.colPrimary
+                            }
+
+                            StyledText {
+                                text: fileDelegate.capturedName
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                color: Appearance.colors.colOnSurface
+                            }
+                        }
+                    }
+                    ScrollBar.vertical: StyledScrollBar {}
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        id: deleteAllDialog
+        anchors.fill: parent
+        z: 200
+        property bool show: false
+        color: Appearance.colors.colScrim
+        opacity: show ? 1 : 0
+        visible: opacity > 0
+        radius: Appearance.rounding.windowRounding
+
+        Behavior on opacity {
+            NumberAnimation {
+                duration: 180
+                easing.type: Easing.OutCubic
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            hoverEnabled: true
+            onClicked: deleteAllDialog.show = false
+        }
+
+        Rectangle {
+            id: deleteAllDialogBox
+            anchors.centerIn: parent
+            implicitWidth: 380
+            implicitHeight: deleteAllDialogColumn.implicitHeight + 48
+            radius: Appearance.rounding.large
+            color: Appearance.m3colors.m3surfaceContainerHigh
+
+            transform: Translate {
+                y: deleteAllDialog.show ? 0 : -40
+                Behavior on y {
+                    NumberAnimation {
+                        duration: 180
+                        easing.type: Easing.OutCubic
+                    }
+                }
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                hoverEnabled: true
+            }
+
+            ColumnLayout {
+                id: deleteAllDialogColumn
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    verticalCenter: parent.verticalCenter
+                    leftMargin: 24
+                    rightMargin: 24
+                }
+                spacing: 12
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: qsTr("Delete all commands?")
+                    color: Appearance.colors.colOnSurface
+                    wrapMode: Text.Wrap
+                    font {
+                        family: Appearance.font.family.title
+                        pixelSize: Appearance.font.pixelSize.title
+                        variableAxes: Appearance.font.variableAxes.title
+                    }
+                }
+
+                StyledText {
+                    Layout.fillWidth: true
+                    text: qsTr("This will remove all %1 commands. This cannot be undone.")
+                        .arg(CommandsService.commandsModel.count)
+                    color: Appearance.colors.colOnSurfaceVariant
+                    font.pixelSize: Appearance.font.pixelSize.small
+                    wrapMode: Text.Wrap
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    spacing: 4
+
+                    Item { Layout.fillWidth: true }
+
+                    DialogButton {
+                        buttonText: qsTr("Cancel")
+                        onClicked: deleteAllDialog.show = false
+                    }
+
+                    DialogButton {
+                        buttonText: qsTr("Delete all")
+                        colText: Appearance.colors.colError
+                        onClicked: {
+                            CommandsService.clearAll();
+                            deleteAllDialog.show = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        Keys.onPressed: event => {
+            if (event.key === Qt.Key_Escape) {
+                deleteAllDialog.show = false;
+                event.accepted = true;
+            }
+        }
+    }
+}
