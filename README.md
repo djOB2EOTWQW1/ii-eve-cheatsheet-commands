@@ -13,5 +13,9 @@ Self-contained: bundles its own `CommandsService`, so it works on either shell. 
 ## Install
 Extensions settings → paste this directory's path (local) or the repo URL → Install → enable. The **Commands** tab appears in the cheatsheet (Super+/ or your configured shortcut).
 
+## Credits
+
+**[P3DROVFX](https://github.com/P3DROVFX)** Borrowed the Cheatsheet Commands tab
+
 ## License
 GPL-3.0 — derived from the GPL-3.0 licensed ii-eve / dots-hyprland code.
