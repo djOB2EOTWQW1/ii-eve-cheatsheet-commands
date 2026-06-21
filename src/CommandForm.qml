@@ -6,6 +6,7 @@ import QtQuick.Controls
 import qs.modules.common
 import qs.modules.common.widgets
 import qs.services
+import "services"
 
 Item {
     id: root

@@ -6,12 +6,21 @@ import qs.modules.common.widgets
 import qs.modules.common.functions
 import qs.modules.common.models
 import qs.services
+import "services"
 import Quickshell
 import Quickshell.Io
 import Qt.labs.folderlistmodel
 
 Item {
     id: root
+    // Injected by the cheatsheet contribution point.
+    property string extensionId: ""
+
+    // Stable fixed size (like the timetable/periodic cheatsheet pages). A QsWindow.window.screen
+    // expression oscillates inside the SwipeView's render layer → binding loop on height →
+    // unstable geometry that breaks tab switching and clicks.
+    implicitWidth: 1350
+    implicitHeight: 700
 
     readonly property color colBg: Config.options.appearance.transparency.enable ? Appearance.colors.colLayer0 : Appearance.m3colors.m3surfaceContainerLow
     readonly property color colTitle: Appearance.colors.colOnSurface
@@ -329,8 +338,8 @@ Item {
                 Rectangle {
                     id: tagSidebar
                     Layout.fillHeight: true
-                    width: Config.options.cheatsheet.commandsTagsSidebar ? 260 : 0
-                    visible: Config.options.cheatsheet.commandsTagsSidebar
+                    width: (Config.options?.cheatsheet?.commandsTagsSidebar ?? false) ? 260 : 0
+                    visible: (Config.options?.cheatsheet?.commandsTagsSidebar ?? false)
                     color: "transparent"
                     clip: true
 
@@ -390,7 +399,7 @@ Item {
 
                                                 StyledText {
                                                     text: tagMa.tagValue === "" ? qsTr("All") : tagMa.tagValue
-                                                    font.pixelSize: Appearance.font.pixelSize.default
+                                                    font.pixelSize: Appearance.font.pixelSize.normal
                                                     font.weight: root.activeTag === tagMa.tagValue ? Font.Medium : Font.Normal
                                                     color: root.activeTag === tagMa.tagValue ? root.colTitle : root.colSubtitle
                                                     Layout.fillWidth: true
@@ -441,8 +450,8 @@ Item {
                         Layout.leftMargin: 16
                         Layout.rightMargin: 16
                         Layout.bottomMargin: 4
-                        implicitHeight: Config.options.cheatsheet.commandsTagsSidebar ? 0 : tagFlickable.height
-                        visible: !Config.options.cheatsheet.commandsTagsSidebar
+                        implicitHeight: (Config.options?.cheatsheet?.commandsTagsSidebar ?? false) ? 0 : tagFlickable.height
+                        visible: !(Config.options?.cheatsheet?.commandsTagsSidebar ?? false)
                         clip: true
 
                         Flickable {
@@ -588,7 +597,7 @@ Item {
 
         PagePlaceholder {
             anchors.horizontalCenter: parent.horizontalCenter
-            anchors.horizontalCenterOffset: Config.options.cheatsheet.commandsTagsSidebar ? (tagSidebar.width / 2) : 0
+            anchors.horizontalCenterOffset: (Config.options?.cheatsheet?.commandsTagsSidebar ?? false) ? (tagSidebar.width / 2) : 0
             anchors.verticalCenter: parent.verticalCenter
 
             Behavior on anchors.horizontalCenterOffset {
@@ -609,7 +618,7 @@ Item {
             z: 5
             colBackground: Appearance.colors.colSecondaryContainer
             anchors.horizontalCenter: parent.horizontalCenter
-            anchors.horizontalCenterOffset: Config.options.cheatsheet.commandsTagsSidebar ? (tagSidebar.width / 2) : 0
+            anchors.horizontalCenterOffset: (Config.options?.cheatsheet?.commandsTagsSidebar ?? false) ? (tagSidebar.width / 2) : 0
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 20
 
