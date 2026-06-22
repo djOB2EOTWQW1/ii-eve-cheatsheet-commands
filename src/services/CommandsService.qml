@@ -114,6 +114,7 @@ Singleton {
     signal importFinished(bool success, string errorMsg)
 
     function importCommands(path) {
+        root.importing = true;
         const plainPath = FileUtils.trimFileProtocol(path);
         importFileView.path = Qt.resolvedUrl("file://" + plainPath);
         importFileView.reload();
@@ -155,6 +156,7 @@ Singleton {
             }
         }
         onLoadFailed: (error) => {
+            root.importing = false;
             importFinished(false, "Could not read file (error " + error + ").");
         }
     }
@@ -165,6 +167,10 @@ Singleton {
         onLoaded: {
             try {
                 const data = JSON.parse(fileView.text());
+                if (!Array.isArray(data)) {
+                    console.log("[CommandsService] Ignoring non-array commands file.");
+                    return;
+                }
                 const batch = data.map(item => {
                     const tagList = (item.tags || []).map(t => ({ modelData: t }));
                     return {

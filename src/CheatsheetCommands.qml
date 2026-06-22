@@ -7,8 +7,6 @@ import qs.modules.common.functions
 import qs.modules.common.models
 import qs.services
 import "services"
-import Quickshell
-import Quickshell.Io
 import Qt.labs.folderlistmodel
 
 Item {
@@ -845,8 +843,17 @@ Item {
         property bool show: false
         color: Appearance.colors.colScrim
         opacity: show ? 1 : 0
-        visible: opacity > 0
+        visible: show || opacity > 0
         radius: Appearance.rounding.windowRounding
+
+        // Grab keyboard focus while open so Keys.onPressed (Escape) below actually
+        // fires; hand focus back to the page on close.
+        onShowChanged: {
+            if (show)
+                forceActiveFocus();
+            else
+                root.forceActiveFocus();
+        }
 
         Behavior on opacity {
             NumberAnimation {
