@@ -1,7 +1,7 @@
 {
   "name": "Cheatsheet Commands",
   "description": "Command-snippets cheatsheet tab: searchable, tagged, with add/edit/import.",
-  "version": "1.1.0", "author": "djOB2EOTWQW1", "icon": "terminal",
+  "version": "1.1.1", "author": "djOB2EOTWQW1", "icon": "terminal",
   "contributes": { "cheatsheet": [
     { "identifier": "commands", "title": "Commands", "icon": "terminal", "component": "src/CheatsheetCommands.qml" }
   ] }
